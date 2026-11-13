@@ -1,0 +1,82 @@
+//Please rename the file to Jenkinsfile in order to run it in the Jenkins
+pipeline {
+    tools {
+        dockerTool 'DEFAULT_DOCKER'
+    }
+    agent any
+
+    //Due to the permissions, environment variable in Jenkins ('GRADLE_USER_HOME') is set as /var/jenkins_home/.gradle
+
+    stages {
+        stage('Build') {
+            steps {
+                configFileProvider([configFile(fileId: 'gradle-nexus', targetLocation: 'ci-publish.init.gradle.kts')]) {
+                    withCredentials([usernamePassword(credentialsId: 'nexus-cicd-admin',
+                                                        usernameVariable: 'ORG_GRADLE_PROJECT_nexusUsername',
+                                                        passwordVariable: 'ORG_GRADLE_PROJECT_nexusPassword')]) {
+                        sh 'chmod +x gradlew'
+                        sh './gradlew --init-script ci-publish.init.gradle.kts clean build --no-daemon --stacktrace'
+                    }
+                }
+            }
+            post {
+                always {
+                    junit testResults: 'build/test-results/test/*.xml', allowEmptyResults: true
+                }
+            }
+        }
+        stage('Deploy when tag') {
+            when {
+               buildingTag()
+            }
+            steps {
+                echo "Deploying version with tag: ${env.TAG_NAME} to Nexus..."
+
+                configFileProvider([configFile(fileId: 'gradle-nexus', targetLocation: 'ci-publish.init.gradle.kts')]) {
+                    withCredentials([usernamePassword(credentialsId: 'nexus-cicd-admin',
+                                                        usernameVariable: 'ORG_GRADLE_PROJECT_nexusUsername',
+                                                        passwordVariable: 'ORG_GRADLE_PROJECT_nexusPassword')]) {
+                        sh './gradlew --init-script ci-publish.init.gradle.kts publish --no-daemon --console=plain'
+                    }
+                }
+            }
+        }
+        stage('Dockerize (Only when Tag and Dockerfile exists)') {
+            when {
+                allOf {
+                    buildingTag()
+                    expression { fileExists 'Dockerfile' }
+                }
+            }
+            steps {
+                script {
+                    def imageName = "kotlin-template" // CHANGE IT !
+                    def gitTag = env.TAG_NAME ?: env.BRANCH_NAME
+                    def cleanVersion = gitTag.replaceAll(/^v/, '')
+                    def registry = "saturn:30088"
+                    def fullImageName = "${registry}/${imageName}"
+                    def imageTag = "${fullImageName}:${cleanVersion}"
+                    def latestTag = "${fullImageName}:latest"
+
+                    withCredentials([usernamePassword(credentialsId: 'nexus-cicd-admin',
+                                                            usernameVariable: 'nexus_user',
+                                                            passwordVariable: 'nexus_password')]) {
+                        // 1. Build (Always assumed there is Dockerfile?)
+                        sh "docker build -t ${imageTag} ."
+
+                        sh '''
+                            mkdir -p "${WORKSPACE}/.docker-config"
+                            export DOCKER_CONFIG="${WORKSPACE}/.docker-config"
+                            echo "$nexus_password" | docker login ''' + registry + ''' -u "$nexus_user" --password-stdin
+                            docker push ''' + imageTag + '''
+                            docker tag ''' + imageTag + ' ' + latestTag + '''
+                            docker push ''' + latestTag + '''
+                            rm -rf "${WORKSPACE}/.docker-config"
+                            docker rmi ''' + imageTag + ' ' + latestTag + ''' || true
+                        '''
+                    }
+                }
+            }
+        }
+    }
+}
