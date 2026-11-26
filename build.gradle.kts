@@ -1,5 +1,6 @@
 plugins {
-    kotlin("jvm")
+    alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.cyclonedx)
     application
     `maven-publish`
 }
@@ -7,7 +8,7 @@ plugins {
 group = "org.example"
 version = providers.environmentVariable("TAG_NAME")
     .map { it.removePrefix("v") }
-    .getOrElse("1.0.0")
+    .getOrElse("1.0.1")
 
 kotlin {
     jvmToolchain(25)
@@ -18,7 +19,12 @@ java {
 }
 
 dependencies {
-    testImplementation(kotlin("test"))
+    implementation(libs.kotlin.logging)
+    runtimeOnly(libs.logback.classic)
+
+    testImplementation(platform(libs.junit.bom))
+    testImplementation(libs.kotlin.test)
+    testRuntimeOnly(libs.junit.platform.launcher)
 }
 
 application {
